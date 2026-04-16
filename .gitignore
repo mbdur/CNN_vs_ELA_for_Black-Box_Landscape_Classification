@@ -1,0 +1,8 @@
+﻿venv/
+__pycache__/
+data/
+models/
+results/
+*.pyc
+*.npz
+5947076.zip
