@@ -21,6 +21,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as T
 
+from collections import Counter
 from config import (
     BBOB_DIM, BBOB_N_FUNCTIONS, BBOB_N_INSTANCES,
     IMG_SIZE_A, IMG_SIZE_B, N_CLASSES, CLASS_NAMES,
@@ -183,6 +184,13 @@ def run_lopo_cv(image_type="a", n_functions=BBOB_N_FUNCTIONS, dim=BBOB_DIM,
         test_loader  = DataLoader(test_ds,  batch_size=batch_size,
                                    shuffle=False, num_workers=0, pin_memory=False)
 
+        # Compute class weights for this fold's training set
+        train_labels = [r["class_idx"] for r in train_recs]
+        class_counts = np.bincount(train_labels, minlength=N_CLASSES).astype(float)
+        class_weights = 1.0 / np.maximum(class_counts, 1.0)
+        class_weights = class_weights / class_weights.sum() * N_CLASSES
+        weight_tensor = torch.tensor(class_weights, dtype=torch.float32).to(device)
+
         # Fresh model for each fold
         model = build_model().to(device)
         optimizer = optim.AdamW(model.parameters(), lr=lr,
@@ -190,9 +198,9 @@ def run_lopo_cv(image_type="a", n_functions=BBOB_N_FUNCTIONS, dim=BBOB_DIM,
         scheduler = optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=n_epochs, eta_min=lr * 0.01
         )
-        criterion = nn.CrossEntropyLoss()
+        criterion = nn.CrossEntropyLoss(weight=weight_tensor)
 
-        best_val_acc = 0.0
+        best_val_acc = -1.0  # use -1 so even 0% accuracy is recorded
         best_state   = None
         best_f1      = 0.0
         best_auc     = float("nan")
@@ -231,20 +239,43 @@ def run_lopo_cv(image_type="a", n_functions=BBOB_N_FUNCTIONS, dim=BBOB_DIM,
             "macro_f1":  best_f1,
             "auc_roc":   best_auc,
             "n_test":    len(test_recs),
+            "preds":     list(best_preds),
+            "labels":    list(best_labels),
         })
 
-    df = pd.DataFrame(fold_results)
+    # --- Pooled global metrics (all folds combined) ---
+    all_preds_pooled  = []
+    all_labels_pooled = []
+    for fr in fold_results:
+        all_preds_pooled.extend(fr["preds"])
+        all_labels_pooled.extend(fr["labels"])
+
+    global_acc = accuracy_score(all_labels_pooled, all_preds_pooled)
+    global_f1  = f1_score(all_labels_pooled, all_preds_pooled,
+                          average="macro", zero_division=0)
+    y_bin_all = label_binarize(all_labels_pooled, classes=list(range(N_CLASSES)))
+    try:
+        # For global AUC we'd need probabilities; use per-fold acc mean instead
+        global_auc = float("nan")
+    except ValueError:
+        global_auc = float("nan")
+
+    # Build DataFrame for CSV (drop preds/labels columns)
+    df_rows = []
+    for fr in fold_results:
+        df_rows.append({k: v for k, v in fr.items() if k not in ("preds", "labels")})
+    df = pd.DataFrame(df_rows)
 
     # Save results
     out_csv = os.path.join(RESULTS_DIR, f"cnn_type{image_type}_lopo_results.csv")
     df.to_csv(out_csv, index=False)
 
-    # Print summary
+    # Print summary — use pooled metrics
     print(f"\n{'='*50}")
     print(f"CNN Type {'A' if image_type == 'a' else 'B'} — LOPO Summary")
-    print(f"  Accuracy:  {df['acc'].mean():.3f} ± {df['acc'].std():.3f}")
-    print(f"  Macro F1:  {df['macro_f1'].mean():.3f} ± {df['macro_f1'].std():.3f}")
-    print(f"  AUC-ROC:   {df['auc_roc'].mean():.3f} ± {df['auc_roc'].std():.3f}")
+    print(f"  Per-fold Accuracy (mean): {df['acc'].mean():.3f} ± {df['acc'].std():.3f}")
+    print(f"  Global Accuracy (pooled): {global_acc:.3f}")
+    print(f"  Global Macro F1 (pooled): {global_f1:.3f}")
     print(f"  Results saved to: {out_csv}")
 
     return df

@@ -94,18 +94,35 @@ def run_ela_rf_lopo(dim=BBOB_DIM, n_functions=BBOB_N_FUNCTIONS, seed=RANDOM_SEED
             "macro_f1": f1,
             "auc_roc":  auc,
             "n_test":   X_test.shape[0],
+            "preds":    list(preds),
+            "labels":   list(y_test),
         })
 
-    df_results = pd.DataFrame(fold_results)
+    # --- Pooled global metrics (all folds combined) ---
+    all_preds_pooled  = []
+    all_labels_pooled = []
+    for fr in fold_results:
+        all_preds_pooled.extend(fr["preds"])
+        all_labels_pooled.extend(fr["labels"])
+
+    global_acc = accuracy_score(all_labels_pooled, all_preds_pooled)
+    global_f1  = f1_score(all_labels_pooled, all_preds_pooled,
+                          average="macro", zero_division=0)
+
+    # Build DataFrame for CSV (drop preds/labels columns)
+    df_rows = []
+    for fr in fold_results:
+        df_rows.append({k: v for k, v in fr.items() if k not in ("preds", "labels")})
+    df_results = pd.DataFrame(df_rows)
 
     out_csv = os.path.join(RESULTS_DIR, "ela_rf_lopo_results.csv")
     df_results.to_csv(out_csv, index=False)
 
     print(f"\n{'='*50}")
     print("ELA + RF — LOPO Summary")
-    print(f"  Accuracy:  {df_results['acc'].mean():.3f} ± {df_results['acc'].std():.3f}")
-    print(f"  Macro F1:  {df_results['macro_f1'].mean():.3f} ± {df_results['macro_f1'].std():.3f}")
-    print(f"  AUC-ROC:   {df_results['auc_roc'].mean():.3f} ± {df_results['auc_roc'].std():.3f}")
+    print(f"  Per-fold Accuracy (mean): {df_results['acc'].mean():.3f} ± {df_results['acc'].std():.3f}")
+    print(f"  Global Accuracy (pooled): {global_acc:.3f}")
+    print(f"  Global Macro F1 (pooled): {global_f1:.3f}")
     print(f"  Results saved to: {out_csv}")
 
     return df_results
@@ -158,8 +175,7 @@ def plot_comparison_bar(results_dir=RESULTS_DIR):
         if not os.path.exists(fpath):
             continue
         df = pd.read_csv(fpath).sort_values("func_id")
-        ax.bar(x + (i - 1) * width, df["acc"], width,
-               label=label, color=colors[i], alpha=0.8)
+        ax.bar(x + (i - 1) * width, df["acc"], width, label=label, color=colors[i], alpha=0.8)
 
     ax.set_xlabel("BBOB Function ID (held out)")
     ax.set_ylabel("Accuracy")
