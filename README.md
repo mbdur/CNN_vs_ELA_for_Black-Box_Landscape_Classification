@@ -31,7 +31,7 @@ Full code for data generation, image rendering, model training, evaluation, Grad
 
 ## Paper
 
-The project paper (`paper.tex`) uses the Springer Nature sn-jnl template and covers introduction, literature review, methodology, and full results with confusion matrices, Grad-CAM interpretability, and sample budget comparison.
+The project paper (`paper.pdf`) uses the Springer Nature sn-jnl template and covers introduction, literature review, methodology, and full results with confusion matrices, Grad-CAM interpretability, and sample budget comparison.
 
 ## References
 
