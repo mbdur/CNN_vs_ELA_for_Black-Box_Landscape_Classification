@@ -1,6 +1,7 @@
 """run_all.py — Run the full pipeline or individual phases."""
 
 import argparse
+import importlib
 import sys
 import os
 
@@ -50,6 +51,7 @@ def run_phase_2():
     m.run_ela_rf_lopo()
     m.build_comparison_table()
     m.plot_comparison_bar()
+    m.plot_confusion_matrices()
 
 
 def run_phase_3a():
@@ -99,4 +101,4 @@ if __name__ == "__main__":
 
     print("\n" + "="*60)
     print("Pipeline complete.")
-    print(f"All results are in the 'results/' directory.")
+    print("All results are in the results/ directory.")

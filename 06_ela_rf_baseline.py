@@ -1,5 +1,6 @@
+
 """
-06_ela_rf_baseline.py — ELA + Random Forest LOPO baseline.
+06_ela_rf_baseline.py -- ELA + Random Forest LOPO baseline.
 Same splits as CNN for fair comparison.
 """
 
@@ -23,11 +24,10 @@ from config import (
     BBOB_N_FUNCTIONS, BBOB_DIM, FUNCTION_TO_CLASS, N_CLASSES,
     CLASS_NAMES, RESULTS_DIR, RANDOM_SEED
 )
-import importlib.util, sys
-_spec = importlib.util.spec_from_file_location("ela_features", "03_ela_features.py")
-_m = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_m)
-load_ela_features = _m.load_ela_features
-get_feature_matrix = _m.get_feature_matrix
+import importlib as _il
+_ela_mod = _il.import_module("03_ela_features")
+load_ela_features = _ela_mod.load_ela_features
+get_feature_matrix = _ela_mod.get_feature_matrix
 
 
 def run_ela_rf_lopo(dim=BBOB_DIM, n_functions=BBOB_N_FUNCTIONS, seed=RANDOM_SEED):
@@ -41,8 +41,9 @@ def run_ela_rf_lopo(dim=BBOB_DIM, n_functions=BBOB_N_FUNCTIONS, seed=RANDOM_SEED
     print(f"Number of features: {len(feature_names)}")
 
     fold_results = []
+    all_predictions = []
 
-    print(f"\nLOPO CV — ELA + Random Forest")
+    print(f"\nLOPO CV -- ELA + Random Forest")
 
     for held_out_func in tqdm(range(1, n_functions + 1), desc="ELA+RF folds"):
         train_mask = func_ids != held_out_func
@@ -94,35 +95,33 @@ def run_ela_rf_lopo(dim=BBOB_DIM, n_functions=BBOB_N_FUNCTIONS, seed=RANDOM_SEED
             "macro_f1": f1,
             "auc_roc":  auc,
             "n_test":   X_test.shape[0],
-            "preds":    list(preds),
-            "labels":   list(y_test),
         })
 
-    # --- Pooled global metrics (all folds combined) ---
-    all_preds_pooled  = []
-    all_labels_pooled = []
-    for fr in fold_results:
-        all_preds_pooled.extend(fr["preds"])
-        all_labels_pooled.extend(fr["labels"])
+        # Store per-instance predictions for confusion matrix
+        instances = df.loc[test_mask, "instance"].values if "instance" in df.columns else range(1, len(y_test) + 1)
+        for inst, pred_val, true_val in zip(instances, preds, y_test):
+            all_predictions.append({
+                "func_id":  held_out_func,
+                "instance": int(inst),
+                "y_true":   int(true_val),
+                "y_pred":   int(pred_val),
+            })
 
-    global_acc = accuracy_score(all_labels_pooled, all_preds_pooled)
-    global_f1  = f1_score(all_labels_pooled, all_preds_pooled,
-                          average="macro", zero_division=0)
-
-    # Build DataFrame for CSV (drop preds/labels columns)
-    df_rows = []
-    for fr in fold_results:
-        df_rows.append({k: v for k, v in fr.items() if k not in ("preds", "labels")})
-    df_results = pd.DataFrame(df_rows)
+    df_results = pd.DataFrame(fold_results)
 
     out_csv = os.path.join(RESULTS_DIR, "ela_rf_lopo_results.csv")
     df_results.to_csv(out_csv, index=False)
 
+    # Save per-instance predictions
+    pred_csv = os.path.join(RESULTS_DIR, "ela_rf_lopo_predictions.csv")
+    pd.DataFrame(all_predictions).to_csv(pred_csv, index=False)
+    print(f"  Per-instance predictions saved to: {pred_csv}")
+
     print(f"\n{'='*50}")
-    print("ELA + RF — LOPO Summary")
-    print(f"  Per-fold Accuracy (mean): {df_results['acc'].mean():.3f} ± {df_results['acc'].std():.3f}")
-    print(f"  Global Accuracy (pooled): {global_acc:.3f}")
-    print(f"  Global Macro F1 (pooled): {global_f1:.3f}")
+    print("ELA + RF -- LOPO Summary")
+    print(f"  Accuracy:  {df_results['acc'].mean():.3f} +/- {df_results['acc'].std():.3f}")
+    print(f"  Macro F1:  {df_results['macro_f1'].mean():.3f} +/- {df_results['macro_f1'].std():.3f}")
+    print(f"  AUC-ROC:   {df_results['auc_roc'].mean():.3f} +/- {df_results['auc_roc'].std():.3f}")
     print(f"  Results saved to: {out_csv}")
 
     return df_results
@@ -131,9 +130,9 @@ def run_ela_rf_lopo(dim=BBOB_DIM, n_functions=BBOB_N_FUNCTIONS, seed=RANDOM_SEED
 def build_comparison_table(results_dir=RESULTS_DIR):
     """3-way comparison table: CNN-A vs CNN-B vs ELA+RF."""
     methods = {
-        "CNN (Type A — PCA)":      "cnn_typea_lopo_results.csv",
-        "CNN (Type B — Pairwise)": "cnn_typeb_lopo_results.csv",
-        "ELA + RF":                "ela_rf_lopo_results.csv",
+        "CNN (Type A -- PCA)":      "cnn_typea_lopo_results.csv",
+        "CNN (Type B -- Pairwise)": "cnn_typeb_lopo_results.csv",
+        "ELA + RF":                 "ela_rf_lopo_results.csv",
     }
 
     rows = []
@@ -145,9 +144,9 @@ def build_comparison_table(results_dir=RESULTS_DIR):
         df = pd.read_csv(fpath)
         rows.append({
             "Method":    method_name,
-            "Accuracy":  f"{df['acc'].mean():.3f} ± {df['acc'].std():.3f}",
-            "Macro F1":  f"{df['macro_f1'].mean():.3f} ± {df['macro_f1'].std():.3f}",
-            "AUC-ROC":   f"{df['auc_roc'].mean():.3f} ± {df['auc_roc'].std():.3f}",
+            "Accuracy":  f"{df['acc'].mean():.3f} +/- {df['acc'].std():.3f}",
+            "Macro F1":  f"{df['macro_f1'].mean():.3f} +/- {df['macro_f1'].std():.3f}",
+            "AUC-ROC":   f"{df['auc_roc'].mean():.3f} +/- {df['auc_roc'].std():.3f}",
         })
 
     summary = pd.DataFrame(rows)
@@ -179,7 +178,7 @@ def plot_comparison_bar(results_dir=RESULTS_DIR):
 
     ax.set_xlabel("BBOB Function ID (held out)")
     ax.set_ylabel("Accuracy")
-    ax.set_title("LOPO Accuracy per Function — CNN-A vs CNN-B vs ELA+RF")
+    ax.set_title("LOPO Accuracy per Function -- CNN-A vs CNN-B vs ELA+RF")
     ax.set_xticks(x)
     ax.legend()
     ax.grid(axis="y", alpha=0.3)
@@ -191,7 +190,52 @@ def plot_comparison_bar(results_dir=RESULTS_DIR):
     print(f"Comparison bar chart saved to: {out_path}")
 
 
+def plot_confusion_matrices(results_dir=RESULTS_DIR):
+    """Plot side-by-side confusion matrices for all three methods (from LOPO predictions)."""
+    methods = {
+        "CNN-A":  "cnn_typea_lopo_predictions.csv",
+        "CNN-B":  "cnn_typeb_lopo_predictions.csv",
+        "ELA+RF": "ela_rf_lopo_predictions.csv",
+    }
+
+    available = {}
+    for label, fname in methods.items():
+        fpath = os.path.join(results_dir, fname)
+        if os.path.exists(fpath):
+            available[label] = pd.read_csv(fpath)
+        else:
+            print(f"  Skipping {label}: {fname} not found")
+
+    if not available:
+        print("No prediction files found -- run training first.")
+        return
+
+    n_methods = len(available)
+    fig, axes = plt.subplots(1, n_methods, figsize=(6 * n_methods, 5))
+    if n_methods == 1:
+        axes = [axes]
+
+    for ax, (label, df) in zip(axes, available.items()):
+        cm = confusion_matrix(df["y_true"], df["y_pred"], labels=list(range(N_CLASSES)))
+        disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=CLASS_NAMES)
+        disp.plot(ax=ax, cmap="Blues", colorbar=False, values_format="d")
+        ax.set_title(label, fontsize=13, fontweight="bold")
+        ax.set_xlabel("Predicted class")
+        ax.set_ylabel("True class")
+        ax.set_xticklabels(CLASS_NAMES, rotation=45, ha="right", fontsize=8)
+        ax.set_yticklabels(CLASS_NAMES, rotation=0, fontsize=8)
+
+    fig.suptitle("LOPO Confusion Matrices -- All Methods", fontsize=14, fontweight="bold", y=1.02)
+    plt.tight_layout()
+
+    out_path = os.path.join(results_dir, "confusion_matrices.png")
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"Confusion matrices saved to: {out_path}")
+
+
 if __name__ == "__main__":
     run_ela_rf_lopo()
     build_comparison_table()
     plot_comparison_bar()
+    plot_confusion_matrices()

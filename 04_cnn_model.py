@@ -1,12 +1,24 @@
+
 """
 04_cnn_model.py — CNN architecture for landscape image classification.
-4 conv blocks (32->64->128->256) + GAP + 2 dense layers.
+Uses a pretrained ResNet-18 backbone with partial fine-tuning:
+  - Layers 1-3: FROZEN (low-level features transfer well)
+  - Layer 4:    UNFROZEN (adapts high-level features to scatter plots)
+  - Head:       TRAINABLE (classification layers)
+Falls back to a lightweight custom CNN if torchvision is unavailable.
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from config import CNN_CHANNELS, CNN_DENSE_DIMS, DROPOUT_RATE, N_CLASSES
+
+
+try:
+    import torchvision.models as models
+    _HAS_TORCHVISION = True
+except ImportError:
+    _HAS_TORCHVISION = False
 
 
 class ConvBlock(nn.Module):
@@ -24,7 +36,7 @@ class ConvBlock(nn.Module):
 
 
 class LandscapeCNN(nn.Module):
-    """CNN for BBOB landscape image classification."""
+    """Lightweight custom CNN fallback."""
     def __init__(self, n_classes=N_CLASSES, channels=CNN_CHANNELS,
                  dense_dims=CNN_DENSE_DIMS, dropout_rate=DROPOUT_RATE,
                  in_channels=3):
@@ -61,7 +73,6 @@ class LandscapeCNN(nn.Module):
         return self.classifier(x)
 
     def get_penultimate_embedding(self, x):
-        """Return embedding from last dense layer (before classifier)."""
         for block in self.conv_blocks:
             x = block(x)
         x = self.gap(x)
@@ -70,12 +81,65 @@ class LandscapeCNN(nn.Module):
         return x
 
 
+class ResNetBackbone(nn.Module):
+    """
+    Pretrained ResNet-18 with partial fine-tuning.
+    Layers 1-3 are frozen (low-level edge/texture features transfer well).
+    Layer 4 is unfrozen (high-level features adapt to scatter plot domain).
+    Classification head is fully trainable.
+    """
+    def __init__(self, n_classes=N_CLASSES, dropout_rate=DROPOUT_RATE):
+        super().__init__()
+        backbone = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+
+        # Freeze everything first
+        for param in backbone.parameters():
+            param.requires_grad = False
+
+        # Unfreeze layer4 so it can adapt to scatter-plot features
+        for param in backbone.layer4.parameters():
+            param.requires_grad = True
+
+        # Remove original FC layer
+        feat_dim = backbone.fc.in_features  # 512
+        backbone.fc = nn.Identity()
+        self.backbone = backbone
+
+        # Trainable classification head
+        self.head = nn.Sequential(
+            nn.Linear(feat_dim, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(128, n_classes),
+        )
+
+        # For Grad-CAM: expose the last conv layer
+        self.target_layer = self.backbone.layer4[-1]
+
+    def forward(self, x):
+        features = self.backbone(x)
+        return self.head(features)
+
+    def get_penultimate_embedding(self, x):
+        features = self.backbone(x)
+        # Return the 128-dim embedding before the final linear
+        for layer in list(self.head.children())[:-1]:
+            features = layer(features)
+        return features
+
+
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
 def build_model(n_classes=N_CLASSES, in_channels=3):
-    return LandscapeCNN(n_classes=n_classes, in_channels=in_channels)
+    if _HAS_TORCHVISION:
+        print("Using pretrained ResNet-18 (layer4 unfrozen) + trainable head")
+        return ResNetBackbone(n_classes=n_classes)
+    else:
+        print("torchvision not available — using lightweight custom CNN")
+        return LandscapeCNN(n_classes=n_classes, in_channels=in_channels)
 
 
 if __name__ == "__main__":

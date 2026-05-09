@@ -1,6 +1,8 @@
+
 """
 07_gradcam.py — Grad-CAM visualisation for trained CNN models.
 Overlays activation heatmaps on landscape images to show what the CNN attends to.
+Supports both ResNetBackbone and LandscapeCNN architectures.
 """
 
 import os
@@ -17,7 +19,7 @@ from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 from pytorch_grad_cam.utils.image import show_cam_on_image
 
 from config import (
-    BBOB_DIM, BBOB_N_FUNCTIONS, BBOB_N_INSTANCES,
+    BBOB_DIM, BBOB_N_FUNCTIONS, BBOB_N_INSTANCES, FUNC_N_INSTANCES,
     IMG_SIZE_A, N_CLASSES, CLASS_NAMES,
     FUNCTION_TO_CLASS, IMAGES_DIR, MODELS_DIR, RESULTS_DIR, RANDOM_SEED
 )
@@ -26,13 +28,25 @@ _cnn_mod = _il.import_module("04_cnn_model")
 build_model = _cnn_mod.build_model
 LandscapeCNN = _cnn_mod.LandscapeCNN
 
+# Check if ResNetBackbone exists (it does when torchvision is available)
+_HAS_RESNET = hasattr(_cnn_mod, "ResNetBackbone")
+if _HAS_RESNET:
+    ResNetBackbone = _cnn_mod.ResNetBackbone
+
+
+# ImageNet stats for ResNet, generic for custom CNN
+_IMAGENET_MEAN = [0.485, 0.456, 0.406]
+_IMAGENET_STD  = [0.229, 0.224, 0.225]
+_GENERIC_MEAN  = [0.5, 0.5, 0.5]
+_GENERIC_STD   = [0.5, 0.5, 0.5]
+
 
 # BBOB function names for readable labelling
 BBOB_FUNCTION_NAMES = {
     1:  "Sphere",
     2:  "Ellipsoidal",
     3:  "Rastrigin",
-    4:  "Büche-Rastrigin",
+    4:  "Buche-Rastrigin",
     5:  "Linear Slope",
     6:  "Attractive Sector",
     7:  "Step Ellipsoidal",
@@ -56,18 +70,44 @@ BBOB_FUNCTION_NAMES = {
 }
 
 
+def _is_resnet(model):
+    """Check if model is a ResNetBackbone instance."""
+    return _HAS_RESNET and isinstance(model, ResNetBackbone)
+
+
+def _get_target_layers(model):
+    """Return the correct target layer list for Grad-CAM."""
+    if _is_resnet(model):
+        # ResNet-18: last conv block is layer4[-1]
+        return [model.backbone.layer4[-1]]
+    else:
+        # Custom CNN: last ConvBlock's conv layer
+        return [model.conv_blocks[-1].conv]
+
+
 def load_image_tensor(func_id, instance, image_type="a", dim=BBOB_DIM,
-                       img_size=IMG_SIZE_A, device=torch.device("cpu")):
-    """Load a single image as normalised tensor + raw float version for overlay."""
+                       img_size=IMG_SIZE_A, device=torch.device("cpu"),
+                       use_resnet_norm=None):
+    """Load a single image as normalised tensor + raw float version for overlay.
+
+    use_resnet_norm: if None, auto-detect based on torchvision availability.
+    """
     subdir = "type_a" if image_type == "a" else "type_b"
     stem   = f"f{func_id:02d}_i{instance:02d}_d{dim}"
     path   = os.path.join(IMAGES_DIR, subdir, stem + ".png")
+
+    # Auto-detect normalization
+    if use_resnet_norm is None:
+        use_resnet_norm = _HAS_RESNET
+
+    mean = _IMAGENET_MEAN if use_resnet_norm else _GENERIC_MEAN
+    std  = _IMAGENET_STD  if use_resnet_norm else _GENERIC_STD
 
     H, W = img_size
     transform = T.Compose([
         T.Resize((H, W)),
         T.ToTensor(),
-        T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+        T.Normalize(mean=mean, std=std),
     ])
 
     img_pil    = Image.open(path).convert("RGB")
@@ -79,9 +119,13 @@ def load_image_tensor(func_id, instance, image_type="a", dim=BBOB_DIM,
 
 def compute_gradcam(model, img_tensor, target_class=None):
     """Run Grad-CAM, return heatmap array (H, W) in [0, 1]."""
-    target_layers = [model.conv_blocks[-1].conv]
+    target_layers = _get_target_layers(model)
 
     targets = [ClassifierOutputTarget(target_class)] if target_class is not None else None
+
+    # Enable gradients on all layers for Grad-CAM (needed if backbone is frozen)
+    for param in model.parameters():
+        param.requires_grad = True
 
     with GradCAM(model=model, target_layers=target_layers) as cam:
         grayscale_cam = cam(input_tensor=img_tensor, targets=targets)
@@ -122,7 +166,8 @@ def visualise_gradcam_panel(func_ids, image_type="a", dim=BBOB_DIM,
         img_tensor, img_float = load_image_tensor(
             func_id=func_id, instance=instance,
             image_type=image_type, dim=dim,
-            img_size=img_size, device=device
+            img_size=img_size, device=device,
+            use_resnet_norm=_is_resnet(model)
         )
 
         with torch.no_grad():
@@ -143,7 +188,7 @@ def visualise_gradcam_panel(func_ids, image_type="a", dim=BBOB_DIM,
         is_correct = pred_class == class_idx
         pred_name  = CLASS_NAMES[pred_class]
         axes[1, col].imshow(visualization)
-        result_str = "✓" if is_correct else "✗"
+        result_str = "correct" if is_correct else "wrong"
         axes[1, col].set_title(
             f"Grad-CAM | pred: {pred_name} ({pred_conf:.2f}) {result_str}",
             fontsize=9,
@@ -152,7 +197,7 @@ def visualise_gradcam_panel(func_ids, image_type="a", dim=BBOB_DIM,
         axes[1, col].axis("off")
 
     plt.suptitle(
-        f"Grad-CAM Interpretability — Type {'A (PCA)' if image_type == 'a' else 'B (Pairwise)'}",
+        f"Grad-CAM Interpretability -- Type {'A (PCA)' if image_type == 'a' else 'B (Pairwise)'}",
         fontsize=13, y=1.01
     )
     plt.tight_layout()

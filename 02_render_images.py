@@ -1,7 +1,11 @@
+
 """
 02_render_images.py — Render sample point clouds as PNG images.
 Type A: PCA scatter (128x128), Type B: pairwise dimension grid (256x192).
 Both built only from (X, f(X)) pairs (respects black-box constraint).
+
+Uses rank-based color normalization so the full viridis colormap is always
+used, regardless of how narrow or skewed the fitness distribution is.
 """
 
 import os
@@ -15,17 +19,31 @@ from tqdm import tqdm
 from config import (
     BBOB_DIM, BBOB_N_FUNCTIONS, BBOB_N_INSTANCES,
     IMG_SIZE_A, IMG_SIZE_B, N_PAIRS_B,
-    SAMPLES_DIR, IMAGES_DIR
+    SAMPLES_DIR, IMAGES_DIR, FUNC_N_INSTANCES
 )
 from pathlib import Path
 
 
 def normalize_log_fitness(y):
-    """Map fitness values to [0, 1] via log normalisation."""
+    """Legacy: Map fitness values to [0, 1] via log normalisation."""
     y_shifted = y - y.min() + 1e-10
     y_log = np.log(y_shifted)
     y_norm = (y_log - y_log.min()) / (y_log.max() - y_log.min() + 1e-10)
     return y_norm
+
+
+def normalize_rank_fitness(y):
+    """Map fitness values to [0, 1] via rank normalisation.
+
+    Each point gets a color proportional to its rank among all N samples.
+    Rank 0 (best fitness) -> 0.0 (dark purple in viridis)
+    Rank N-1 (worst fitness) -> 1.0 (bright yellow in viridis)
+
+    This guarantees full colormap usage regardless of the fitness
+    distribution shape — no more all-yellow images.
+    """
+    ranks = np.argsort(np.argsort(y)).astype(np.float64)
+    return ranks / max(len(y) - 1, 1)
 
 
 def render_type_a(X, y, size=IMG_SIZE_A, colormap="viridis"):
@@ -33,12 +51,12 @@ def render_type_a(X, y, size=IMG_SIZE_A, colormap="viridis"):
     H, W = size
     pca = PCA(n_components=2)
     X_2d = pca.fit_transform(X)
-    c = normalize_log_fitness(y)
+    c = normalize_rank_fitness(y)
 
     dpi = 100
     fig, ax = plt.subplots(figsize=(W / dpi, H / dpi), dpi=dpi)
     ax.scatter(X_2d[:, 0], X_2d[:, 1], c=c, cmap=colormap,
-               s=4, linewidths=0, alpha=0.85)
+               s=8, linewidths=0, alpha=0.85)
     ax.set_axis_off()
     fig.patch.set_facecolor("black")
     ax.set_facecolor("black")
@@ -66,7 +84,7 @@ def render_type_b(X, y, n_pairs=N_PAIRS_B, size=IMG_SIZE_B, colormap="viridis"):
 
     n_cols = 3
     n_rows = 2
-    c = normalize_log_fitness(y)
+    c = normalize_rank_fitness(y)
 
     dpi = 100
     fig, axes = plt.subplots(n_rows, n_cols,
@@ -77,7 +95,7 @@ def render_type_b(X, y, n_pairs=N_PAIRS_B, size=IMG_SIZE_B, colormap="viridis"):
     for idx, (di, dj) in enumerate(pairs):
         ax = axes[idx]
         ax.scatter(X[:, di], X[:, dj], c=c, cmap=colormap,
-                   s=3, linewidths=0, alpha=0.8)
+                   s=6, linewidths=0, alpha=0.8)
         ax.set_axis_off()
         ax.set_facecolor("black")
         ax.set_title(f"d{di+1} vs d{dj+1}", color="white", fontsize=6, pad=2)
@@ -105,7 +123,8 @@ def save_image(img, out_path):
     Image.fromarray(img).save(out_path)
 
 
-def render_all_images(n_functions=BBOB_N_FUNCTIONS, n_instances=BBOB_N_INSTANCES,
+def render_all_images(n_functions=BBOB_N_FUNCTIONS,
+                      func_n_instances=FUNC_N_INSTANCES,
                       dim=BBOB_DIM, samples_dir=SAMPLES_DIR,
                       images_dir=IMAGES_DIR, overwrite=False):
     """Render Type A and Type B images for all function/instance pairs."""
@@ -114,14 +133,16 @@ def render_all_images(n_functions=BBOB_N_FUNCTIONS, n_instances=BBOB_N_INSTANCES
     os.makedirs(dir_a, exist_ok=True)
     os.makedirs(dir_b, exist_ok=True)
 
-    total = n_functions * n_instances
-    print(f"\nRendering images for {n_functions} functions × {n_instances} instances")
-    print(f"  Type A (PCA scatter): {IMG_SIZE_A[1]}×{IMG_SIZE_A[0]} px → {dir_a}")
-    print(f"  Type B (Pairwise):    {IMG_SIZE_B[1]}×{IMG_SIZE_B[0]} px → {dir_b}\n")
+    total = sum(func_n_instances.get(f, 10) for f in range(1, n_functions + 1))
+    print(f"\nRendering images for {n_functions} functions ({total} total instances)")
+    print(f"  Type A (PCA scatter): {IMG_SIZE_A[1]}x{IMG_SIZE_A[0]} px -> {dir_a}")
+    print(f"  Type B (Pairwise):    {IMG_SIZE_B[1]}x{IMG_SIZE_B[0]} px -> {dir_b}")
+    print(f"  Color normalization:  RANK-BASED (full colormap guaranteed)\n")
 
     with tqdm(total=total, desc="Rendering") as pbar:
         for func_id in range(1, n_functions + 1):
-            for instance in range(1, n_instances + 1):
+            n_inst = func_n_instances.get(func_id, 10)
+            for instance in range(1, n_inst + 1):
                 stem = f"f{func_id:02d}_i{instance:02d}_d{dim}"
                 path_a = os.path.join(dir_a, stem + ".png")
                 path_b = os.path.join(dir_b, stem + ".png")

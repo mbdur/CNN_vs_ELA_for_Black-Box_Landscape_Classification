@@ -1,5 +1,6 @@
+
 """
-03_ela_features.py — ELA feature extraction via pflacco.
+03_ela_features.py -- ELA feature extraction via pflacco.
 Uses the same N=500 sample points as image rendering.
 Outputs data/ela_features/ela_all_d{dim}.csv.
 """
@@ -14,6 +15,7 @@ from tqdm import tqdm
 from pflacco.classical_ela_features import (
     calculate_ela_distribution,
     calculate_ela_meta,
+    calculate_ela_level,
     calculate_nbc,
     calculate_information_content,
     calculate_dispersion,
@@ -21,7 +23,8 @@ from pflacco.classical_ela_features import (
 
 from config import (
     BBOB_DIM, BBOB_N_FUNCTIONS, BBOB_N_INSTANCES,
-    SAMPLES_DIR, ELA_DIR, FUNCTION_TO_CLASS, ELA_FEATURE_SETS
+    SAMPLES_DIR, ELA_DIR, FUNCTION_TO_CLASS, ELA_FEATURE_SETS,
+    FUNC_N_INSTANCES
 )
 
 
@@ -52,6 +55,13 @@ def compute_ela_features(X, y, feature_sets=None):
             except Exception as e:
                 all_features["ela_meta_error"] = str(e)
 
+        if "ela_level" in feature_sets:
+            try:
+                feats = calculate_ela_level(X_df, y)
+                all_features.update(feats)
+            except Exception as e:
+                all_features["ela_level_error"] = str(e)
+
         if "nbc" in feature_sets:
             try:
                 feats = calculate_nbc(X_df, y)
@@ -76,7 +86,8 @@ def compute_ela_features(X, y, feature_sets=None):
     return all_features
 
 
-def run_ela_extraction(n_functions=BBOB_N_FUNCTIONS, n_instances=BBOB_N_INSTANCES,
+def run_ela_extraction(n_functions=BBOB_N_FUNCTIONS,
+                        func_n_instances=FUNC_N_INSTANCES,
                         dim=BBOB_DIM, samples_dir=SAMPLES_DIR,
                         out_dir=ELA_DIR, overwrite=False):
     """Extract ELA features from all saved sample files, save as CSV."""
@@ -88,14 +99,15 @@ def run_ela_extraction(n_functions=BBOB_N_FUNCTIONS, n_instances=BBOB_N_INSTANCE
         return pd.read_csv(out_csv)
 
     rows = []
-    total = n_functions * n_instances
+    total = sum(func_n_instances.get(f, 10) for f in range(1, n_functions + 1))
 
-    print(f"\nExtracting ELA features: {n_functions}×{n_instances} = {total} instances")
+    print(f"\nExtracting ELA features: {n_functions} functions, {total} total instances")
     print(f"Feature sets: {ELA_FEATURE_SETS}\n")
 
     with tqdm(total=total, desc="ELA features") as pbar:
         for func_id in range(1, n_functions + 1):
-            for instance in range(1, n_instances + 1):
+            n_inst = func_n_instances.get(func_id, 10)
+            for instance in range(1, n_inst + 1):
                 stem = f"f{func_id:02d}_i{instance:02d}_d{dim}"
                 npz_path = os.path.join(samples_dir, stem + ".npz")
 
@@ -122,7 +134,7 @@ def run_ela_extraction(n_functions=BBOB_N_FUNCTIONS, n_instances=BBOB_N_INSTANCE
 
     df = pd.DataFrame(rows)
     df.to_csv(out_csv, index=False)
-    print(f"\nSaved ELA features: {df.shape} → {out_csv}")
+    print(f"\nSaved ELA features: {df.shape} -> {out_csv}")
     return df
 
 
